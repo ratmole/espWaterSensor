@@ -51,13 +51,17 @@ String apiKey = "xxx";
 String inputName = "waterLevel";
 String inputNameSub1 = "waterPressure";
 String inputNameSub2 = "Voltage";
+String inputNameSub3 = "Percentage";
 
 int analogPin = A0;
 
+float maxR = 0;
+float minR = 1024;
+
 unsigned long lastTime = 0;
-unsigned long timerDelay = 5000;
-const float OffSet = 0.466;
-float V, P;
+unsigned long timerDelay = 2000;
+const float OffSet = 0.147;
+float V, P, WP;
 
 void blink(int times)
 {
@@ -73,15 +77,37 @@ void blink(int times)
   }
 }
 
-float average(int analogPin, int samples, int delaySec)
+void storeMinMax(float V)
 {
-  long sum = 0;
+  if (V < minR)
+  {
+    minR = V;
+  }
+  if (V > maxR)
+  {
+    maxR = V;
+  }
+}
+
+float average(int analogPin, int samples, int delaymSec)
+{
+  float sum = 0.000;
+
+  if (samples == 1)
+  {
+    return (float)analogRead(analogPin);
+  }
   for (int i = 0; i < samples; i++)
   {
     sum += analogRead(analogPin);
-    delay(delaySec);
+    delay(delaymSec);
   }
   return float(sum) / samples;
+}
+
+float mapfloat(float x, float in_min, float in_max, float out_min, float out_max)
+{
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
 AsyncWebServer server(80);
@@ -135,19 +161,29 @@ void loop()
       HTTPClient http;
 
       // Connect sensor to Analog ADC
-      V = average(analogPin, 10, 10) * 1.00 / 1024; // Sensor output voltage
-      P = (V - OffSet) * 250;                       // Calculate water pressure
+      V = average(analogPin, 1, 0) * 1.00 / 1024; // Sensor output voltage
+      storeMinMax(V);
+      P = (V - OffSet) * 250; // Calculate water pressure
+      WP = mapfloat((V - OffSet), 0.000, 1.005, 0.0, 100.0);
 
       Serial.print("Voltage:");
       Serial.print(V, 3);
-      Serial.println("V");
-
-      Serial.print("Pressure:");
-      Serial.print(P, 1);
-      Serial.println(" KPa");
+      Serial.print("V");
+      Serial.print(", Pressure:");
+      Serial.print(P, 2);
+      Serial.print(" KPa");
+      Serial.print(", Percentage:");
+      Serial.print(WP, 1);
+      Serial.print(" %");
+      Serial.print(", V MIN:");
+      Serial.print(minR, 3);
+      Serial.print("V");
+      Serial.print(" V MAX:");
+      Serial.print(maxR, 3);
+      Serial.print("V");
       Serial.println();
 
-      String serverPath = serverName + "/" + inputName + "?fulljson={%22" + inputNameSub1 + "%22:" + P + ",%22" + inputNameSub2 + "%22:" + V + "}&apikey=" + apiKey;
+      String serverPath = serverName + "/" + inputName + "?fulljson={%22" + inputNameSub1 + "%22:" + P + ",%22" + inputNameSub2 + "%22:" + V + ",%22" + inputNameSub3 + "%22:" + WP + "}&apikey=" + apiKey;
 
       // Your Domain name with URL path or IP address with path
       http.begin(client, serverPath.c_str());
@@ -157,10 +193,10 @@ void loop()
 
       if (httpResponseCode > 0)
       {
-        Serial.print("HTTP Response code: ");
-        Serial.println(httpResponseCode);
-        String payload = http.getString();
-        Serial.println(payload);
+        // Serial.print("HTTP Response code: ");
+        // Serial.println(httpResponseCode);
+        // String payload = http.getString();
+        // Serial.println(payload);
         blink(1);
       }
       else
