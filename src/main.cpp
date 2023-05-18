@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
@@ -43,11 +45,11 @@
   After the calibration the sensor is ready for measuring!
 **************************************************************/
 
-const char *ssid = "ii";
-const char *password = "123qweasdzxc123qweasdzxc";
-String serverName = "http://ratmole.ddns.net/emoncms/input/post";
+const char *ssid = "xxx";
+const char *password = "xxx";
+String serverName = "http://xxx/emoncms/input/post";
 
-String apiKey = "388a981e8f2a02d4d644abde0dec5146";
+String apiKey = "xxx";
 String inputName = "waterLevel";
 String inputNameSub1 = "waterPressure";
 String inputNameSub2 = "Voltage";
@@ -57,18 +59,69 @@ String Name = "Water Level";
 
 int analogPin = A0;
 
-float minV, minP, minWP = 1024;
+float V, P, WP;
+float minV = 1024.000;
+float minP = 1024.000;
+float minWP = 1024.000;
 
-float V, P, WP, maxV, maxP, maxWP, lastTime = 0;
+float maxV = 0.000;
+float maxP = 0.000;
+float maxWP = 0.000;
+float lastTime = 0;
+
 unsigned long timerDelay = 2000;
-const float OffSet = 0.149;
-const float Max_ADCvoltage = 1.000;
-const float pressureMultiplier = 5.0;
+const float OffSet = 0.147;
+const float Max_ADCvoltage = 0.980;
+
+bool boolTimeDate = false;
+String bootTimeDate;
+String currentDate;
+
+bool shouldReboot = false;
+
+// Week Days
+String weekDays[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
+// Month names
+String months[12] = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
 
 const char *html = "<html>"
-                   "<meta http-equiv='refresh' content='30'>"
+                   "<meta http-equiv='refresh' content='2'>"
                    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-                   "<link rel='stylesheet' href='https://www.w3schools.com/w3css/4/w3.css'><body><center>"
+                   "<style>"
+                   "p {font-size:10px;line-height:12px;}"
+                   ".tank {width: 150px;height:300px;border: 2px solid black;background: white;position: relative;display: inline-block;margin: 10px;}"
+                   ".tank .water {position:absolute;background: #4CAF50;width:100%%;bottom: 0;}"
+                   ".tank .value {position:absolute;width:100%%;vertical-align:middle;bottom:0;}"
+                   ".tank .min {position:absolute;width:100%%;border-top: 1px solid red;bottom:0;}"
+                   ".tank .max {position:absolute;width:100%%;border-top: 1px solid blue;bottom:0;}"
+                   ".tank .scaleValue {position:absolute;right:175px !important;;font-size:10px;;border-top:none !important;}"
+                   ".tank ._0  {position:absolute;width:10px;border-top: 1px solid black;bottom:0;right:155px;}"
+                   ".tank ._5  {position:absolute;width:5px;border-top: 1px solid black;bottom:15;right:155px;}"
+                   ".tank ._10 {position:absolute;width:10px;border-top: 1px solid black;bottom:30;right:155px;}"
+                   ".tank ._15  {position:absolute;width:5px;border-top: 1px solid black;bottom:45;right:155px;}"
+                   ".tank ._20 {position:absolute;width:10px;border-top: 1px solid black;bottom:60;right:155px;}"
+                   ".tank ._25  {position:absolute;width:5px;border-top: 1px solid black;bottom:75;right:155px;}"
+                   ".tank ._30 {position:absolute;width:10px;border-top: 1px solid black;bottom:90;right:155px;}"
+                   ".tank ._35  {position:absolute;width:5px;border-top: 1px solid black;bottom:105;right:155px;}"
+                   ".tank ._40 {position:absolute;width:10px;border-top: 1px solid black;bottom:120;right:155px;}"
+                   ".tank ._45  {position:absolute;width:5px;border-top: 1px solid black;bottom:135;right:155px;}"
+                   ".tank ._50 {position:absolute;width:10px;border-top: 1px solid black;bottom:150;right:155px;}"
+                   ".tank ._55  {position:absolute;width:5px;border-top: 1px solid black;bottom:165;right:155px;}"
+                   ".tank ._60 {position:absolute;width:10px;border-top: 1px solid black;bottom:180;right:155px;}"
+                   ".tank ._65  {position:absolute;width:5px;border-top: 1px solid black;bottom:195;right:155px;}"
+                   ".tank ._70 {position:absolute;width:10px;border-top: 1px solid black;bottom:210;right:155px;}"
+                   ".tank ._75  {position:absolute;width:5px;border-top: 1px solid black;bottom:225;right:155px;}"
+                   ".tank ._80 {position:absolute;width:10px;border-top: 1px solid black;bottom:240;right:155px;}"
+                   ".tank ._85  {position:absolute;width:5px;border-top: 1px solid black;bottom:255;right:155px;}"
+                   ".tank ._90 {position:absolute;width:10px;border-top: 1px solid black;bottom:270;right:155px;}"
+                   ".tank ._95  {position:absolute;width:5px;border-top: 1px solid black;bottom:285;right:155px;}"
+                   ".tank ._100 {position:absolute;width:10px;border-top: 1px solid black;bottom:300;right:155px;}"
+                   "</style>"
+                   "<body><center>"
+                   "<p><b>%PLACEHOLDER_NAME%</b></p>"
+                   "<p><b>%PLACEHOLDER_DATE%</b></p>"
+                   "<p>%PLACEHOLDER_BOOTDATE%</p>"
                    "<p><b>Voltage: %PLACEHOLDER_VOLTAGE% V</b></p>"
                    "<p>Voltage Min: %PLACEHOLDER_VMIN% V ,"
                    "Voltage Max: %PLACEHOLDER_VMAX% V</p>"
@@ -77,14 +130,103 @@ const char *html = "<html>"
                    "Pressure Max: %PLACEHOLDER_PMAX% kPa</p>"
                    "<p><b>Percentage: %PLACEHOLDER_PERCENTAGE%</b></p>"
                    "<p>Percentage Min: %PLACEHOLDER_WPMIN% ,"
-                   "Percentage Max: %PLACEHOLDER_WPMAX% </p></center>"
-                   "<div class='w3-container'>"
-                   "<div class='w3-border'>"
-                   "<div class='w3-green' style='height:24px;width:%PLACEHOLDER_PERCENTAGE%%'></div>"
+                   "Percentage Max: %PLACEHOLDER_WPMAX% </p>"
+                   "<div class='tank'>"
+                   "<div class='water' style='height:%PLACEHOLDER_PERCENTAGE%%%'></div>"
+                   "<div class='value' style='bottom:%PLACEHOLDER_PERCENTAGE%%%'>%PLACEHOLDER_PERCENTAGE%%%</div>"
+                   "<div class='min' style='bottom:%PLACEHOLDER_WPMIN%%%'></div>"
+                   "<div class='max' style='bottom:%PLACEHOLDER_WPMAX%%%'></div>"
+                   "<div class='scaleValue _0'>0</div><div class='_0'></div>"
+                   "<div class='_5'></div>"
+                   "<div class='scaleValue _10'>10</div><div class='_10'></div>"
+                   "<div class='_15'></div>"
+                   "<div class='scaleValue _20'>20</div><div class='_20'></div>"
+                   "<div class='_25'></div>"
+                   "<div class='scaleValue _30'>30</div><div class='_30'></div>"
+                   "<div class='_35'></div>"
+                   "<div class='scaleValue _40'>40</div><div class='_40'></div>"
+                   "<div class='_45'></div>"
+                   "<div class='scaleValue _50'>50</div><div class='_50'></div>"
+                   "<div class='_55'></div>"
+                   "<div class='scaleValue _60'>60</div><div class='_60'></div>"
+                   "<div class='_65'></div>"
+                   "<div class='scaleValue _70'>70</div><div class='_70'></div>"
+                   "<div class='_75'></div>"
+                   "<div class='scaleValue _80'>80</div><div class='_80'></div>"
+                   "<div class='_85'></div>"
+                   "<div class='scaleValue _90'>90</div><div class='_90'></div>"
+                   "<div class='_95'></div>"
+                   "<div class='scaleValue _100'>100</div><div class='_100'></div>"
                    "</div>"
-                   "</div>"
-                   "</body></html>";
+                   "<p><a href='/reset'>reset</a></p>"
+                   "<p><a href='/restart'>restart</a></p>"
+                   "</center></body></html>";
 
+const char *htmlMinimal = "<html>"
+                          "<meta http-equiv='refresh' content='2'>"
+                          "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                          "<style>"
+                          "p {font-size:10px;line-height:12px;}"
+                          ".tank {width: 150px;height: 300px;border: 2px solid black;background: white;position: relative;display: inline-block;margin: 10px;}"
+                          ".tank .water {position:absolute;background: #4CAF50;width:100%%;bottom: 0;}"
+                          ".tank .value {position:absolute;width:100%%;vertical-align:middle;bottom:0;}"
+                          ".tank .min {position:absolute;width:100%%;border-top: 1px solid red;bottom:0;}"
+                          ".tank .max {position:absolute;width:100%%;border-top: 1px solid blue;bottom:0;}"
+                          ".tank .scaleValue {position:absolute;right:175px !important;;font-size:10px;;border-top:none !important;}"
+                          ".tank ._0  {position:absolute;width:10px;border-top: 1px solid black;bottom:0;right:155px;}"
+                          ".tank ._5  {position:absolute;width:5px;border-top: 1px solid black;bottom:15;right:155px;}"
+                          ".tank ._10 {position:absolute;width:10px;border-top: 1px solid black;bottom:30;right:155px;}"
+                          ".tank ._15  {position:absolute;width:5px;border-top: 1px solid black;bottom:45;right:155px;}"
+                          ".tank ._20 {position:absolute;width:10px;border-top: 1px solid black;bottom:60;right:155px;}"
+                          ".tank ._25  {position:absolute;width:5px;border-top: 1px solid black;bottom:75;right:155px;}"
+                          ".tank ._30 {position:absolute;width:10px;border-top: 1px solid black;bottom:90;right:155px;}"
+                          ".tank ._35  {position:absolute;width:5px;border-top: 1px solid black;bottom:105;right:155px;}"
+                          ".tank ._40 {position:absolute;width:10px;border-top: 1px solid black;bottom:120;right:155px;}"
+                          ".tank ._45  {position:absolute;width:5px;border-top: 1px solid black;bottom:135;right:155px;}"
+                          ".tank ._50 {position:absolute;width:10px;border-top: 1px solid black;bottom:150;right:155px;}"
+                          ".tank ._55  {position:absolute;width:5px;border-top: 1px solid black;bottom:165;right:155px;}"
+                          ".tank ._60 {position:absolute;width:10px;border-top: 1px solid black;bottom:180;right:155px;}"
+                          ".tank ._65  {position:absolute;width:5px;border-top: 1px solid black;bottom:195;right:155px;}"
+                          ".tank ._70 {position:absolute;width:10px;border-top: 1px solid black;bottom:210;right:155px;}"
+                          ".tank ._75  {position:absolute;width:5px;border-top: 1px solid black;bottom:225;right:155px;}"
+                          ".tank ._80 {position:absolute;width:10px;border-top: 1px solid black;bottom:240;right:155px;}"
+                          ".tank ._85  {position:absolute;width:5px;border-top: 1px solid black;bottom:255;right:155px;}"
+                          ".tank ._90 {position:absolute;width:10px;border-top: 1px solid black;bottom:270;right:155px;}"
+                          ".tank ._95  {position:absolute;width:5px;border-top: 1px solid black;bottom:285;right:155px;}"
+                          ".tank ._100 {position:absolute;width:10px;border-top: 1px solid black;bottom:300;right:155px;}"
+                          "</style>"
+                          "<body><center>"
+                          "<p><b>%PLACEHOLDER_NAME%</b></p>"
+                          "<p><b>%PLACEHOLDER_DATE%</b></p>"
+                          "<p>%PLACEHOLDER_BOOTDATE%</p>"
+                          "<div class='tank'>"
+                          "<div class='water' style='height:%PLACEHOLDER_PERCENTAGE%%%'></div>"
+                          "<div class='value' style='bottom:%PLACEHOLDER_PERCENTAGE%%%'>%PLACEHOLDER_PERCENTAGE%%%</div>"
+                          "<div class='min' style='bottom:%PLACEHOLDER_WPMIN%%%'></div>"
+                          "<div class='max' style='bottom:%PLACEHOLDER_WPMAX%%%'></div>"
+                          "<div class='scaleValue _0'>0</div><div class='_0'></div>"
+                          "<div class='_5'></div>"
+                          "<div class='scaleValue _10'>10</div><div class='_10'></div>"
+                          "<div class='_15'></div>"
+                          "<div class='scaleValue _20'>20</div><div class='_20'></div>"
+                          "<div class='_25'></div>"
+                          "<div class='scaleValue _30'>30</div><div class='_30'></div>"
+                          "<div class='_35'></div>"
+                          "<div class='scaleValue _40'>40</div><div class='_40'></div>"
+                          "<div class='_45'></div>"
+                          "<div class='scaleValue _50'>50</div><div class='_50'></div>"
+                          "<div class='_55'></div>"
+                          "<div class='scaleValue _60'>60</div><div class='_60'></div>"
+                          "<div class='_65'></div>"
+                          "<div class='scaleValue _70'>70</div><div class='_70'></div>"
+                          "<div class='_75'></div>"
+                          "<div class='scaleValue _80'>80</div><div class='_80'></div>"
+                          "<div class='_85'></div>"
+                          "<div class='scaleValue _90'>90</div><div class='_90'></div>"
+                          "<div class='_95'></div>"
+                          "<div class='scaleValue _100'>100</div><div class='_100'></div>"
+                          "</div>"
+                          "</center></body></html>";
 void blink(int times)
 {
   int count = 0;
@@ -101,6 +243,7 @@ void blink(int times)
 
 void storeMinMax(float V, float P, float WP)
 {
+
   if (V < minV)
   {
     minV = V;
@@ -150,7 +293,10 @@ float mapfloat(float x, float in_min, float in_max, float out_min, float out_max
 
 String processor(const String &var)
 {
-
+  if (var == "PLACEHOLDER_NAME")
+  {
+    return String(Name);
+  }
   if (var == "PLACEHOLDER_VOLTAGE")
   {
     return String(V);
@@ -187,10 +333,28 @@ String processor(const String &var)
   {
     return String(maxWP);
   }
+  else if (var == "PLACEHOLDER_DATE")
+  {
+    return String(currentDate);
+  }
+  else if (var == "PLACEHOLDER_BOOTDATE")
+  {
+    return String(bootTimeDate);
+  }
   return String();
 }
 
 AsyncWebServer server(80);
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
+void RESTART()
+{
+  Serial.println("RESTART");
+  server.end();
+  delay(2000);
+  ESP.restart();
+}
 
 void setup()
 {
@@ -211,6 +375,12 @@ void setup()
     delay(500);
     Serial.print(".");
   }
+
+  // Time
+  timeClient.begin();
+  // Set offset time in seconds to adjust for your timezone
+  timeClient.setTimeOffset(3600 * 3);
+
   Serial.println("");
   Serial.print("Connected to WiFi network with IP Address: ");
   Serial.println(WiFi.localIP());
@@ -222,11 +392,25 @@ void setup()
   Serial.print(timerDelay / 1000);
   Serial.println(" seconds before publishing the first reading.");
 
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(200, "text/plain", Name); });
-
   server.on("/get", HTTP_GET, [](AsyncWebServerRequest *request)
             { request->send_P(200, "text/html", html, processor); });
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+            { request->send_P(200, "text/html", htmlMinimal, processor); });
+
+  server.on("/restart", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+    shouldReboot = true;
+    AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", shouldReboot?"OK":"FAIL");
+    response->addHeader("Connection", "close");
+    request->redirect("/get");
+    request->send(response); });
+
+  server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+    minV = 1024.000; minP = 1024.000; minWP = 1024.000;
+    maxV = 0.000;maxP = 0.000;maxWP = 0.000; 
+    Serial.println("RESET");
+    request->redirect("/get"); });
 
   AsyncElegantOTA.begin(&server); // Start AsyncElegantOTA
   server.begin();
@@ -234,6 +418,14 @@ void setup()
 }
 void loop()
 {
+
+  if (shouldReboot)
+  {
+    Serial.println("Rebooting...");
+    delay(100);
+    ESP.restart();
+  }
+
   // Send an HTTP POST request depending on timerDelay
   if ((millis() - lastTime) > timerDelay)
   {
@@ -243,6 +435,32 @@ void loop()
       WiFiClient client;
       HTTPClient http;
 
+      timeClient.update();
+
+      time_t epochTime = timeClient.getEpochTime();
+      String formattedTime = timeClient.getFormattedTime();
+
+      // int currentHour = timeClient.getHours();
+      // int currentMinute = timeClient.getMinutes();
+      // int currentSecond = timeClient.getSeconds();
+      String weekDay = weekDays[timeClient.getDay()];
+
+      // Get a time structure
+      struct tm *ptm = gmtime((time_t *)&epochTime);
+
+      int monthDay = ptm->tm_mday;
+      int currentMonth = ptm->tm_mon + 1;
+      String currentMonthName = months[currentMonth - 1];
+      int currentYear = ptm->tm_year + 1900;
+
+      currentDate = String(formattedTime) + " " + String(monthDay) + "/" + String(currentMonth) + "/" + String(currentYear);
+
+      if (boolTimeDate == false)
+      {
+        bootTimeDate = currentDate;
+        boolTimeDate = true;
+      }
+
       // Connect sensor to Analog ADC
       V = average(analogPin, 1, 0) * 1 / 1023; // Sensor output voltage
 
@@ -251,7 +469,8 @@ void loop()
       WP = mapfloat((V - OffSet), 0.000, Max_ADCvoltage, 0.0, 100.0);
       storeMinMax(V, P, WP);
 
-      Serial.print("Voltage:");
+      Serial.print(currentDate);
+      Serial.print(" # Voltage:");
       Serial.print(V, 3);
       Serial.print("V");
       Serial.print(", Pressure:");
