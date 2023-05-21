@@ -3,6 +3,7 @@
 #include <ESP8266HTTPClient.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <Smoothed.h>
 
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
@@ -58,26 +59,33 @@ String inputNameSub3 = "Percentage";
 String Name = "Water Level";
 
 int analogPin = A0;
+int countStall = 0;
 
-float V, P, WP;
+float V, Vreal, P, WP;
 float minV = 1024.000;
 float minP = 1024.000;
+float minVreal = 1024.000;
+
 float minWP = 1024.000;
 
+float Vpre = 0;
 float maxV = 0.000;
+float maxVreal = 0.000;
 float maxP = 0.000;
 float maxWP = 0.000;
 float lastTime = 0;
 
-unsigned long timerDelay = 2000;
-const float OffSet = 0.147;
-const float Max_ADCvoltage = 0.980;
+unsigned long timerDelay = 10000;
+float OffSet = 0.002;
+float Max_ADCvoltage = 0.740;
 
 bool boolTimeDate = false;
 String bootTimeDate;
 String currentDate;
 
 bool shouldReboot = false;
+
+Smoothed <float> mySensor; 
 
 // Week Days
 String weekDays[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
@@ -86,7 +94,7 @@ String weekDays[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "F
 String months[12] = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
 
 const char *html = "<html>"
-                   "<meta http-equiv='refresh' content='2'>"
+                   "<meta http-equiv='refresh' content='5'>"
                    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
                    "<style>"
                    "p {font-size:10px;line-height:12px;}"
@@ -125,6 +133,9 @@ const char *html = "<html>"
                    "<p><b>Voltage: %PLACEHOLDER_VOLTAGE% V</b></p>"
                    "<p>Voltage Min: %PLACEHOLDER_VMIN% V ,"
                    "Voltage Max: %PLACEHOLDER_VMAX% V</p>"
+                   "<p><b>Voltage Real: %PLACEHOLDER_VOLTAGEREAL% V</b></p>"
+                   "<p>Voltage Min Real: %PLACEHOLDER_VMINREAL% V ,"
+                   "Voltage Max Real: %PLACEHOLDER_VMAXREAL% V</p>"
                    "<p><b>Pressure: %PLACEHOLDER_PRESSURE% kPa</b></p>"
                    "<p>Pressure Min: %PLACEHOLDER_PMIN% kPa ,"
                    "Pressure Max: %PLACEHOLDER_PMAX% kPa</p>"
@@ -163,7 +174,7 @@ const char *html = "<html>"
                    "</center></body></html>";
 
 const char *htmlMinimal = "<html>"
-                          "<meta http-equiv='refresh' content='2'>"
+                          "<meta http-equiv='refresh' content='5'>"
                           "<meta name='viewport' content='width=device-width, initial-scale=1'>"
                           "<style>"
                           "p {font-size:10px;line-height:12px;}"
@@ -241,7 +252,7 @@ void blink(int times)
   }
 }
 
-void storeMinMax(float V, float P, float WP)
+void storeMinMax(float V, float Vreal, float P, float WP)
 {
 
   if (V < minV)
@@ -251,6 +262,14 @@ void storeMinMax(float V, float P, float WP)
   if (V > maxV)
   {
     maxV = V;
+  }
+  if (Vreal < minVreal)
+  {
+    minVreal = Vreal;
+  }
+  if (Vreal > maxVreal)
+  {
+    maxVreal = Vreal;
   }
   if (P < minP)
   {
@@ -297,41 +316,53 @@ String processor(const String &var)
   {
     return String(Name);
   }
-  if (var == "PLACEHOLDER_VOLTAGE")
+  else if (var == "PLACEHOLDER_VOLTAGE")
   {
-    return String(V);
+    return String((float)V, 3);
+  }
+  else if (var == "PLACEHOLDER_VOLTAGEREAL")
+  {
+    return String((float)Vreal, 3);
   }
   else if (var == "PLACEHOLDER_PRESSURE")
   {
-    return String(P);
+    return String((float)P, 3);
   }
   else if (var == "PLACEHOLDER_PERCENTAGE")
   {
-    return String(WP);
+    return String((float)WP, 1);
   }
   else if (var == "PLACEHOLDER_VMIN")
   {
-    return String(minV);
+    return String((float)minV, 3);
   }
   else if (var == "PLACEHOLDER_VMAX")
   {
-    return String(maxV);
+    return String((float)maxV, 3);
+  }
+  else if (var == "PLACEHOLDER_VMINREAL")
+  {
+    return String((float)minVreal, 3);
+  }
+  else if (var == "PLACEHOLDER_VMAXREAL")
+  {
+    return String((float)maxVreal, 3);
   }
   else if (var == "PLACEHOLDER_PMIN")
   {
-    return String(minP);
+    return String((float)minP, 3);
   }
   else if (var == "PLACEHOLDER_PMAX")
   {
-    return String(maxP);
+    return String((float)maxP, 3);
   }
   else if (var == "PLACEHOLDER_WPMIN")
   {
-    return String(minWP);
+    return String((float)minWP, 3);
   }
   else if (var == "PLACEHOLDER_WPMAX")
   {
-    return String(maxWP);
+    return String((float)maxWP, 3);
   }
   else if (var == "PLACEHOLDER_DATE")
   {
@@ -358,6 +389,10 @@ void RESTART()
 
 void setup()
 {
+
+  int smooth = (1800 / (timerDelay/1000)); // 30min values
+  mySensor.begin(SMOOTHED_AVERAGE, smooth);	
+  //mySensor.begin(SMOOTHED_EXPONENTIAL, 10);
   Serial.begin(9600); // open serial port, set the baud rate to 9600 bps
   Serial.println("/** ESP8266 Water pressure sensor with OTA Enabled **/");
 
@@ -408,7 +443,7 @@ void setup()
   server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request)
             {
     minV = 1024.000; minP = 1024.000; minWP = 1024.000;
-    maxV = 0.000;maxP = 0.000;maxWP = 0.000; 
+    maxV = 0.000;maxP = 0.000;maxWP = 0.000;
     Serial.println("RESET");
     request->redirect("/get"); });
 
@@ -418,6 +453,8 @@ void setup()
 }
 void loop()
 {
+
+  
 
   if (shouldReboot)
   {
@@ -459,16 +496,21 @@ void loop()
       {
         bootTimeDate = currentDate;
         boolTimeDate = true;
-      }
+        }
 
-      // Connect sensor to Analog ADC
-      V = average(analogPin, 1, 0) * 1 / 1023; // Sensor output voltage
+      Vreal = average(analogPin, 1, 0) * 1 / 1023; // Sensor output voltage
 
+      V = (Vreal - OffSet);
       // P = (V - OffSet) * 250;             //Calculate water pressure for 5V ACD + 1 MPa pressure sensor
-      P = mapfloat((V - OffSet), 0.000, Max_ADCvoltage, 0.0, 10.0); // Calculate water pressure
-      WP = mapfloat((V - OffSet), 0.000, Max_ADCvoltage, 0.0, 100.0);
-      storeMinMax(V, P, WP);
 
+      mySensor.add(V);
+      V = mySensor.get();
+
+      P = mapfloat(V, 0.000, Max_ADCvoltage, 0, 10); // Calculate water pressure
+      WP = mapfloat(V, 0.000, Max_ADCvoltage, 0, 100);
+
+      storeMinMax(V, Vreal, P, WP);
+      
       Serial.print(currentDate);
       Serial.print(" # Voltage:");
       Serial.print(V, 3);
